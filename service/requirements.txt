@@ -1,0 +1,8 @@
+flask==3.0.*
+gunicorn==22.*
+google-cloud-secret-manager==2.*
+
+# UniTrade SDK: 統一期貨提供的私有套件，非 PyPI 公開套件。
+# TODO: 確認官方安裝方式（vendor 提供的 wheel/zip 或內部 pip index），
+# 並在 Dockerfile 裡加對應的安裝步驟。
+# unitrade

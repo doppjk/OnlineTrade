@@ -1,0 +1,24 @@
+# Secrets — never commit these
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+secrets/
+service-account*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs / local test artifacts
+*.log
+backtest/output/
