@@ -1,0 +1,33 @@
+// ============================================================================
+// Webhook Ping Test — 純粹測 webhook 延遲/速度用，不含任何交易邏輯
+//
+// 跟 ema_crossover_pipeline_test.pine 的差別：那份還是「策略」，要等 EMA
+// 交叉才會觸發，1小時線可能要等上幾十分鐘。這份不判斷任何條件，
+// 圖表上每一根K棒收盤就無條件送一次 webhook —— 切到 1 分鐘線的話等於
+// 每分鐘發一次，用來快速確認 TradingView → Cloud Run → (UniTrade) 這條路徑
+// 的延遲、有沒有漏訊號、Cloud Run log 看不看得到。
+//
+// 注意：這是 indicator 不是 strategy，不會有進出場/回測報表，純粹是
+// alert() 發射器。上線交易請用 ema_crossover_pipeline_test.pine 或未來的
+// 正式策略，不要用這份。
+// ============================================================================
+
+//@version=6
+indicator("Webhook Ping Test", overlay=true)
+
+webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
+symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
+
+// 每根K棒收盤都算一次 ping，action 在 buy/sell 之間交替，方便在 log 裡分辨
+var int pingCount = 0
+pingCount := pingCount + 1
+isBuy = pingCount % 2 == 1
+
+pingMsg = '{"secret":"' + webhookSecret + '","signal_id":"ping_' + str.tostring(time) +
+     '","strategy":"webhook_ping_test","symbol":"' + symbolCode +
+     '","action":"' + (isBuy ? "buy" : "sell") + '","qty":1}'
+
+alert(pingMsg, alert.freq_once_per_bar_close)
+
+plotshape(true, title="Ping", style=shape.circle, location=location.belowbar,
+     color=color.new(color.blue, 0), size=size.tiny)

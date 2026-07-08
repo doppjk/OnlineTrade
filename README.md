@@ -40,4 +40,8 @@ Cloud Run (service/)                          ← 標準模式，非常駐單例
 
 `service/` 已經是可以跑的最小版本：webhook 驗證密鑰、防重放去重、風控（骨架，一律放行）、DRY_RUN 模式（預設開啟，不會真的呼叫 UniTrade）。`broker/unitrade_client.py` 已接上真的 `unitrade` SDK，欄位對照官方套件驗證過，但還沒用真實測試帳號實際下過單。
 
-下一步：討論一個簡單策略，把整條路徑串起來（先在測試帳號上跑通 webhook → 風控 → 送出委託）。
+策略方面先擱置真正想交易的 `ma300_breakout_retest_strategy.pine`（條件嚴格、訊號稀疏，驗證起來費工），改用邏輯簡單、會頻繁觸發的 `ema_crossover_pipeline_test.pine`（EMA 9/21 交叉）跟純粹測速用的 `webhook_ping_test.pine` 打通 pipeline（細節見 `pine/README.md`）。
+
+**Pipeline 已於 2026-07-08 完整跑通**：Cloud Run 服務部署成功（`onlinetrader-webhook`，asia-east1），TradingView alert（webhook_ping_test.pine，1 分鐘線）→ Cloud Run `/webhook` → 密鑰驗證 → DRY_RUN 略過下單，全程 log 可見、每分鐘穩定觸發一次。
+
+下一步：把 Cloud Run 的 `DRY_RUN` 設為 `false`、補上 `UNITRADE_*` 密鑰，接測試帳號跑通真實下單（先解決 `unitrade_client.py` 裡 "close" action 的 opencloseflag 缺口），之後再回頭處理 `ma300_breakout_retest_strategy.pine` 的訊號稀疏問題。

@@ -1,0 +1,107 @@
+// ============================================================================
+// MA300 Breakout-Retest Long — 60分K 版本
+//
+// 規則（已與使用者確認）：
+// 1. 均線：300 天 SMA（用日K計算），用前一天已收盤完成的值，避免當天日K還沒收盤造成 repaint。
+// 2. 突破：60分K 收盤價「第一次」站上 300日SMA（事件，不是狀態）。
+// 3. 測試：突破後，某根 60分K 的最低價觸碰到或跌破均線，但那根K棒的收盤價仍在均線之上，
+//    算一次成功測試（2026-07-08 已改為這個定義：不需要先收盤跌破再收復，觸而不破即可）。
+// 4. 失敗處理：某根 60分K 收盤價「真的」跌破均線（不只是碰到），視為測試失敗，整個狀態
+//    重置為 0，要等均線被重新突破才會重新開始算三次測試。
+// 5. 連續三次成功測試後，做多；進場後狀態重置，等待下一次全新的突破週期。
+// 6. 出場（已與使用者確認）：收盤跌破 300日SMA 就出場，跟進場邏輯對稱（趨勢前提消失即出場）。
+//    不設固定停利，靠這個停損規則讓獲利奔跑；也先不加最長持有時間保險出場。
+//
+// 已知缺口（刻意先不做，等這條路徑打通再補）：
+// - 商品代碼、口數、密鑰都是輸入參數，記得改成你自己的值再建立 alert。
+// - service/broker/unitrade_client.py 目前 place_order() 對 "close" action 只是簡單映射成
+//   賣出 (bs="S")，還沒處理 UniTrade 下單物件的 opencloseflag（開倉/平倉旗標）——真的要送出
+//   平倉單之前要先查清楚這個欄位怎麼填，不然可能變成開一個新的空單而不是平掉多單。
+//
+// 驗證狀態（2026-07-08）：已透過瀏覽器自動化實際貼進 TradingView Pine Editor 編譯，
+// 沒有編譯錯誤，Add to chart 後 300D SMA 有正確畫在圖上、Strategy Tester 面板正常載入
+// （測試當下用的是使用者既有圖表上的 Wheat Futures 1h，尚未出現任何一筆交易，屬合理結果——
+// 換到真正要交易的商品/週期後請重新檢視）。還沒有用真實的 UniTrade 測試帳號跑過下單。
+// ============================================================================
+
+//@version=6
+strategy("MA300 Breakout-Retest Long (60m)", overlay=true,
+     initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1,
+     calc_on_every_tick=false, pyramiding=0)
+
+// ============ Inputs ============
+maLength      = input.int(300, "均線天數 (以日K計算)", minval=1)
+webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
+symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
+orderQty      = input.int(1, "下單口數", minval=1, group="Webhook")
+
+// ============ 300日均線 (日K, 用前一天已收盤的值避免 repaint) ============
+dailySma = request.security(syminfo.tickerid, "1D", ta.sma(close, maLength)[1], lookahead=barmerge.lookahead_off)
+
+plot(dailySma, title="300D SMA", color=color.orange, linewidth=2)
+
+// ============ 狀態機 ============
+// state: 0 = 尚未突破 (等待站上均線), 1 = 已突破/測試中
+var int state     = 0
+var int testCount = 0
+
+breakoutNow = state == 0 and ta.crossover(close, dailySma)
+
+if breakoutNow
+    // 突破當下這根不算測試，從下一根開始才算
+    state     := 1
+    testCount := 0
+else if state == 1
+    if close < dailySma
+        // 收盤真的跌破均線 -> 測試失敗，整個重置
+        state     := 0
+        testCount := 0
+    else if low <= dailySma
+        // 低點碰到/跌破均線，但收盤仍在均線之上 -> 算一次成功測試
+        testCount := testCount + 1
+
+plot(testCount, "DEBUG testCount", color=color.purple)
+plot(state, "DEBUG state", color=color.blue)
+
+longSignal = state == 1 and testCount >= 3
+
+if longSignal
+    strategy.entry("Long", strategy.long, qty=orderQty)
+    // 觸發後重置，等待下一次全新的突破週期，避免同一次設定重複進場
+    state     := 0
+    testCount := 0
+
+plotshape(longSignal, title="Long Entry", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+
+// ============ 出場：收盤跌破300日均線就出場（不設固定停利，不設時間停損） ============
+exitSignal = strategy.position_size > 0 and close < dailySma
+
+if exitSignal
+    strategy.close("Long", comment="MA跌破出場")
+
+plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// ============ Webhook Alert ============
+// payload 格式對應 repo README / pine/README.md 定義的共用格式
+if longSignal
+    entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
+         '","strategy":"ma300_breakout_retest","symbol":"' + symbolCode +
+         '","action":"buy","qty":' + str.tostring(orderQty) + '}'
+    alert(entryMsg, alert.freq_once_per_bar_close)
+
+if exitSignal
+    exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
+         '","strategy":"ma300_breakout_retest","symbol":"' + symbolCode +
+         '","action":"close","qty":' + str.tostring(orderQty) + '}'
+    alert(exitMsg, alert.freq_once_per_bar_close)
+
+// ============ 設定 TradingView Alert 的方式 ============
+// 1. 把這份程式碼貼進 Pine Editor，Add to Chart，圖表週期切到 60分鐘。
+// 2. 右上角「Alert」(鬧鐘圖示) -> Create Alert。
+// 3. Condition 選這個腳本的名稱，觸發條件選「Any alert() function call」
+//    (不要選其他條件，這樣才會用上面 alert() 動態組出來的 JSON 訊息)。
+// 4. Webhook URL 填你 Cloud Run 服務的 /webhook 網址，Message 欄位可以留預設值，
+//    因為 alert() 裡的內容會蓋過去。
+// 5. Expiration 記得設夠長 (或選「Open-ended alert」，如果你的方案支援)。

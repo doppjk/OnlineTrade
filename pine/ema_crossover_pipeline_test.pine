@@ -1,0 +1,61 @@
+// ============================================================================
+// EMA Crossover — 純粹用來打通 pipeline 的簡單策略
+//
+// 跟 ma300_breakout_retest_strategy.pine 是分開的兩份策略：
+// - 這份：邏輯簡單、單一時間週期、歷史上會頻繁觸發，目的是快速驗證
+//   TradingView → webhook → Cloud Run → UniTrade 整條路徑通不通。
+// - 那份：真正想交易的邏輯（300日均線突破後測試），但因為條件嚴格、
+//   又牽涉多時間週期 (request.security)，驗證起來比較費工，先擱著，
+//   之後有空再回頭確認。
+//
+// 規則：
+// 1. 快線 EMA(9) 由下往上穿越慢線 EMA(21) -> 做多
+// 2. 快線 EMA(9) 由上往下穿越慢線 EMA(21) -> 出場
+// 3. 沒有額外停損/停利 —— 這份純粹是拿來測試訊號能不能正確送到 Cloud Run，
+//    不是要拿來真的交易，上線前不要直接套用這個規則。
+// ============================================================================
+
+//@version=6
+strategy("EMA Crossover (Pipeline Test)", overlay=true,
+     initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1,
+     calc_on_every_tick=false, pyramiding=0)
+
+// ============ Inputs ============
+fastLen       = input.int(9, "快線 EMA")
+slowLen       = input.int(21, "慢線 EMA")
+webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
+symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
+orderQty      = input.int(1, "下單口數", minval=1, group="Webhook")
+
+fastEma = ta.ema(close, fastLen)
+slowEma = ta.ema(close, slowLen)
+
+plot(fastEma, title="Fast EMA", color=color.blue, linewidth=2)
+plot(slowEma, title="Slow EMA", color=color.orange, linewidth=2)
+
+longSignal = ta.crossover(fastEma, slowEma)
+exitSignal = ta.crossunder(fastEma, slowEma)
+
+if longSignal
+    strategy.entry("Long", strategy.long, qty=orderQty)
+
+if exitSignal
+    strategy.close("Long", comment="EMA死叉出場")
+
+plotshape(longSignal, title="Long Entry", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// ============ Webhook Alert（跟另一份策略共用同樣的 payload 格式） ============
+if longSignal
+    entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
+         '","strategy":"ema_crossover_test","symbol":"' + symbolCode +
+         '","action":"buy","qty":' + str.tostring(orderQty) + '}'
+    alert(entryMsg, alert.freq_once_per_bar_close)
+
+if exitSignal
+    exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
+         '","strategy":"ema_crossover_test","symbol":"' + symbolCode +
+         '","action":"close","qty":' + str.tostring(orderQty) + '}'
+    alert(exitMsg, alert.freq_once_per_bar_close)
