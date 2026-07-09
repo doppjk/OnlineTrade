@@ -17,6 +17,13 @@ UniTrade API 封裝。
 2026-07-09 對照官方文件（開始頁 https://pfcec.github.io/unitrade/開始/）修正一個 bug：
 login() 原本讀取 resp.error（不存在的欄位），實際上 LoginResponse 物件是
 ok / errorcode / errormsg，已修正並把 errorcode 也一起往上傳。
+
+2026-07-09 修正第二個 bug（真實測試帳號下單回傳 MSG005「該帳號不允許操作」才發現）：
+下單物件的 actno 原本直接沿用登入帳號 (self.account)，但官方 FAQ
+(https://pfcec.github.io/unitrade/常見問題/下單失敗/) 說明登入帳號不一定等於
+可下單的「交易帳號」，要在登入成功後另外呼叫 unitrade.get_accounts()
+（注意是 module-level function，不是 api.get_accounts()）取得交易帳號清單，
+下單時要用清單裡的 7 碼交易帳號當 actno。已修正為登入後查詢並快取。
 """
 import logging
 from dataclasses import dataclass
@@ -46,11 +53,12 @@ class UnitradeClient:
 
     def __init__(self, url: str, account: str, password: str, cert_path: str, cert_password: str):
         self.url = url
-        self.account = account
+        self.account = account          # 登入帳號 (userid)，不一定等於下單用的交易帳號
         self.password = password
         self.cert_path = cert_path
         self.cert_password = cert_password
         self._api: Optional["Unitrade"] = None
+        self.trade_account: Optional[str] = None  # 登入後查到的實際可下單交易帳號 (actno)
 
     def login(self) -> OrderResult:
         self._api = Unitrade()
@@ -64,6 +72,21 @@ class UnitradeClient:
             logger.error("UniTrade login failed: errorcode=%s errormsg=%s", resp.errorcode, resp.errormsg)
             return OrderResult(ok=False, stage="login", errorcode=resp.errorcode, errormsg=resp.errormsg)
         logger.info("UniTrade login ok")
+
+        # 登入帳號不一定是可下單的交易帳號，需另外查詢（見官方 FAQ「該帳號不允許操作」章節）。
+        # 注意 get_accounts() 是 unitrade 模組層級的函式，不是 self._api.get_accounts()。
+        try:
+            accounts = unitrade.get_accounts()
+        except Exception as exc:  # noqa: BLE001  SDK 例外情況先攔下來轉成一般錯誤回傳
+            logger.error("UniTrade get_accounts failed: %s", exc)
+            return OrderResult(ok=False, stage="login", errormsg=f"get_accounts failed: {exc}")
+
+        if not accounts:
+            logger.error("UniTrade get_accounts returned empty list")
+            return OrderResult(ok=False, stage="login", errormsg="no trading accounts available")
+
+        self.trade_account = accounts[0]
+        logger.info("UniTrade trading accounts: %s (using %s)", accounts, self.trade_account)
         return OrderResult(ok=True, stage="login")
 
     def place_order(self, signal: dict) -> OrderResult:
@@ -72,11 +95,11 @@ class UnitradeClient:
         目前只處理開倉方向 buy/sell，"close" 邏輯留到策略定案後再補
         （通常要另外查目前部位方向才能正確組出平倉單）。
         """
-        if self._api is None:
+        if self._api is None or self.trade_account is None:
             return OrderResult(ok=False, stage="order", errormsg="not logged in")
 
         order_obj = DOrderObject(
-            actno=self.account,
+            actno=self.trade_account,
             subactno="",
             productid=signal["symbol"],
             bs="B" if signal["action"] == "buy" else "S",
