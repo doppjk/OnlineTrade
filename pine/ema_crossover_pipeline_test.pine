@@ -51,14 +51,16 @@ plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
      location=location.abovebar, color=color.new(color.red, 0), size=size.small)
 
 // ============ Webhook Alert（跟另一份策略共用同樣的 payload 格式） ============
+// 2026-07-10 加上 price 欄位 (close)：safe_test_mode 用來算限價的參考價，
+// 這個帳號沒有 fquote 報價權限，Cloud Run 端不能自己查價，改由 Pine 帶過去。
 if longSignal
     entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
          '","strategy":"ema_crossover_test","symbol":"' + syminfo.ticker +
-         '","action":"buy","qty":' + str.tostring(orderQty) + '}'
+         '","action":"buy","qty":' + str.tostring(orderQty) + ',"price":"' + str.tostring(close) + '"}'
     alert(entryMsg, alert.freq_once_per_bar_close)
 
 if exitSignal
     exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
          '","strategy":"ema_crossover_test","symbol":"' + syminfo.ticker +
-         '","action":"close","qty":' + str.tostring(orderQty) + '}'
+         '","action":"close","qty":' + str.tostring(orderQty) + ',"price":"' + str.tostring(close) + '"}'
     alert(exitMsg, alert.freq_once_per_bar_close)

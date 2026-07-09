@@ -52,4 +52,6 @@ Cloud Run (service/)                          ← 標準模式，非常駐單例
 
 **2026-07-10 新增 SAFE_TEST_MODE + 商品對照表**：使用者已換成正式交易帳號測試，要求避免真的成交。`unitrade_client.py` 新增 `safe_test_mode`（預設開啟）：下單時查目前成交價，強制送限價單、掛在買單價格下方/賣單價格上方 20%（`SAFE_LIMIT_OFFSET_PCT`，可調）的不可能成交價位，確認沒問題再手動關閉（`SAFE_TEST_MODE=false`）改回市價單。另外新增 `service/broker/product_map.py`，Pine 腳本改成直接送 `syminfo.ticker`，Cloud Run 端查表轉成 UniTrade 的 (exchange, symbol)，不用再手動填商品代碼（這是這幾天第二次因為手動填商品代碼出包）。合約換月邏輯也加了緩衝期（`ROLLOVER_BUFFER_DAYS`，預設 7 天），避免用到量能已經萎縮的即將到期合約。
 
-下一步：用 MNQ + SAFE_TEST_MODE 重新跑一次完整的下單測試（含真實 TradingView alert 觸發，不是手動 curl），確認限價單有正確掛出去、狀態是「委託成功」但沒有成交；之後解決 `unitrade_client.py` 裡 `"close"` action 的 opencloseflag 缺口（目前只驗證過 `buy` 開倉單），並開始討論 Python 鏡射回測引擎（`backtest/`）怎麼做（含外期報價 `fquote` 怎麼接）。
+**2026-07-10 修正 SAFE_TEST_MODE 的參考價來源**：跑真實測試時發現 Cloud Run log 顯示 `fquote_on_error 不允許操作!`——這個帳號有下單權限 (`ftrade`) 但沒有外期報價權限 (`fquote`)，兩者在這家券商是分開授權的，導致 `safe_test_mode` 查不到參考價、下單直接失敗。改成優先用 webhook payload 裡的 `price` 欄位（Pine 端在 alert 觸發當下的 K 棒 `close`，本來就知道，不用另外查），查不到才退回呼叫 `fquote` 當備援。三份 Pine 策略檔跟 `pine/README.md` payload schema 都已同步更新加上 `price` 欄位。
+
+下一步：把最新版 Pine 腳本重新貼到 TradingView（既有圖表上的腳本不會自動套用原始檔更新），用 MNQ + SAFE_TEST_MODE 重新跑一次完整的下單測試（含真實 TradingView alert 觸發，不是手動 curl），確認限價單有正確掛出去、狀態是「委託成功」但沒有成交；測完記得手動到券商 App 取消掛單（目前程式還沒有取消/改單功能）。之後解決 `unitrade_client.py` 裡 `"close"` action 的 opencloseflag 缺口（目前只驗證過 `buy` 開倉單），並開始討論 Python 鏡射回測引擎（`backtest/`）怎麼做（含外期報價 `fquote` 怎麼接，或者這個帳號要另外申請權限）。

@@ -35,10 +35,15 @@ ftrade.order()，並且合約月份改成即時查詢目前有效合約（見 _r
 
 2026-07-10 加上 safe_test_mode：使用者已經換成正式交易帳號測試（不是測試帳號，
 真的可能成交），要求下單先改成限價單、掛在「絕對不可能成交」的價位，確認整條
-路徑正常後才切回市價單。做法：查目前成交價 (fquote.query_tick_data_trade)，
-買單掛在成交價下方 SAFE_LIMIT_OFFSET_PCT（預設 20%），賣單掛在上方，
-正常市況下不會有滑價大到吃到這個價位的可能。safe_test_mode 預設開啟，
-之後真的要送市價單時把它關掉（見 main.py 怎麼從環境變數帶進來）。
+路徑正常後才切回市價單。買單掛在參考價下方 SAFE_LIMIT_OFFSET_PCT（預設 20%），
+賣單掛在上方，正常市況下不會有滑價大到吃到這個價位的可能。safe_test_mode
+預設開啟，之後真的要送市價單時把它關掉（見 main.py 怎麼從環境變數帶進來）。
+
+2026-07-10 safe_test_mode 的參考價來源改掉：原本用 fquote.query_tick_data_trade()
+查目前成交價，結果這個帳號的外期報價權限沒開，回傳「不允許操作!」（下單權限
+ftrade 跟報價權限 fquote 是分開授權的）。改成優先用 payload 裡帶的 price 欄位
+（TradingView alert 觸發當下的 K 棒收盤價，Pine 端已經知道，不需要另外查）；
+如果 payload 沒帶 price，才退回呼叫 fquote 查價當備援。
 """
 import logging
 from dataclasses import dataclass
@@ -163,14 +168,15 @@ class UnitradeClient:
                         exchange, symbol, fallback.monthyear, fallback.lasttradedate)
         return fallback.monthyear
 
-    def _get_last_price(self, exchange: str, symbol: str, maturitymonthyear: str) -> Optional[float]:
+    def _get_last_price_from_fquote(self, exchange: str, symbol: str, maturitymonthyear: str) -> Optional[float]:
         """
-        查目前成交價，safe_test_mode 用來算「絕對不可能成交」的限價要掛在哪。
-        查不到就回傳 None（呼叫端要處理查不到價格的情況，不能硬送限價 0）。
-        注意：這裡假設 fquote 也是 Unitrade 實例屬性 (self._api.fquote)，跟
-        dtrade/ftrade/get_accounts 已經確認過的模式一致——官方「外期行情」頁的
-        範例又是寫成 unitrade.fquote.xxx()（module-level），沒有實際測試過
-        這頁範例是否也跟 get_accounts() 一樣寫錯，第一次用時要留意錯誤訊息。
+        查目前成交價（fquote API 備援路徑）。查不到就回傳 None。
+
+        2026-07-10 確認：這個帳號沒有 fquote（外期報價）權限，實際呼叫會回傳
+        「不允許操作!」——下單權限 (ftrade) 跟報價權限 (fquote) 在這家券商是
+        分開授權的。正常情況下 place_order() 會優先用 webhook payload 帶的
+        price 欄位，不會走到這個方法；保留它是給之後申請到 fquote 權限、或是
+        換成有權限的帳號時可以用。
         """
         try:
             resp = self._api.fquote.query_tick_data_trade(exchange, symbol, maturitymonthyear, "", "F")
@@ -185,6 +191,33 @@ class UnitradeClient:
 
         return resp.data.lastprice
 
+    def _resolve_reference_price(self, signal: dict, exchange: str, symbol: str,
+                                  maturitymonthyear: str) -> Optional[float]:
+        """
+        safe_test_mode 用來算「絕對不可能成交」限價的參考價。
+
+        優先順序：
+        1. webhook payload 裡的 price 欄位 —— Pine 端在 alert 觸發當下的 K 棒
+           close，不需要額外查價，也不受這個帳號沒有 fquote 權限的限制。
+        2. 沒帶 price 時才退回呼叫 fquote 查即時成交價（多半會失敗，見
+           _get_last_price_from_fquote 的註解）。
+
+        查不到（兩條路徑都沒有）就回傳 None，呼叫端要 fail closed，不能硬送
+        限價 0。
+        """
+        raw_price = signal.get("price")
+        if raw_price not in (None, "", 0, "0"):
+            try:
+                price = float(raw_price)
+                if price > 0:
+                    logger.info("using price from webhook payload as safe_test_mode reference price: %s", price)
+                    return price
+            except (TypeError, ValueError):
+                logger.warning("payload price %r is not a valid number, falling back to fquote", raw_price)
+
+        logger.info("no usable price in payload, falling back to fquote lookup (likely to fail without fquote permission)")
+        return self._get_last_price_from_fquote(exchange, symbol, maturitymonthyear)
+
     def place_order(self, signal: dict) -> OrderResult:
         """
         signal 預期欄位:
@@ -194,6 +227,10 @@ class UnitradeClient:
           exchange 只有在 symbol 沒查到對照表時才會用到，預設 "CME"
           action   "buy" / "sell"
           qty      口數
+          price    K 棒收盤價 (Pine 的 close)，safe_test_mode 開啟時用來算
+                   限價要掛在哪（見 _resolve_reference_price）。這個帳號沒有
+                   fquote 報價權限，所以 safe_test_mode 下沒有這個欄位會直接
+                   失敗，不是選填。
 
         目前只處理開倉方向 buy/sell，"close" 邏輯留到之後再補
         （通常要另外查目前部位方向才能正確組出平倉單）。
@@ -219,16 +256,18 @@ class UnitradeClient:
         ordertype = "M"
         price = 0
         if self.safe_test_mode:
-            last_price = self._get_last_price(exchange, symbol, maturitymonthyear)
-            if last_price is None:
+            ref_price = self._resolve_reference_price(signal, exchange, symbol, maturitymonthyear)
+            if ref_price is None:
                 return OrderResult(ok=False, stage="order",
-                                    errormsg="safe_test_mode: could not fetch last price to compute safe limit")
-            # 買單掛在成交價下方、賣單掛在上方，正常市況下不會被吃到。
-            offset = last_price * self.safe_limit_offset_pct
-            price = round(last_price - offset if bs == "B" else last_price + offset, 2)
+                                    errormsg="safe_test_mode: no price in payload and fquote lookup failed "
+                                              "(this account has no fquote permission — Pine script must send "
+                                              "a \"price\" field in the webhook payload)")
+            # 買單掛在參考價下方、賣單掛在上方，正常市況下不會被吃到。
+            offset = ref_price * self.safe_limit_offset_pct
+            price = round(ref_price - offset if bs == "B" else ref_price + offset, 2)
             ordertype = "L"
-            logger.info("safe_test_mode: last_price=%s -> limit price=%s (bs=%s, offset_pct=%s)",
-                        last_price, price, bs, self.safe_limit_offset_pct)
+            logger.info("safe_test_mode: ref_price=%s -> limit price=%s (bs=%s, offset_pct=%s)",
+                        ref_price, price, bs, self.safe_limit_offset_pct)
 
         order_obj = FOrderObject()
         order_obj.actno = self.trade_account

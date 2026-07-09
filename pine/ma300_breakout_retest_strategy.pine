@@ -88,16 +88,18 @@ plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
 
 // ============ Webhook Alert ============
 // payload 格式對應 repo README / pine/README.md 定義的共用格式
+// 2026-07-10 加上 price 欄位 (close)：safe_test_mode 用來算限價的參考價，
+// 這個帳號沒有 fquote 報價權限，Cloud Run 端不能自己查價，改由 Pine 帶過去。
 if longSignal
     entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
          '","strategy":"ma300_breakout_retest","symbol":"' + syminfo.ticker +
-         '","action":"buy","qty":' + str.tostring(orderQty) + '}'
+         '","action":"buy","qty":' + str.tostring(orderQty) + ',"price":"' + str.tostring(close) + '"}'
     alert(entryMsg, alert.freq_once_per_bar_close)
 
 if exitSignal
     exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
          '","strategy":"ma300_breakout_retest","symbol":"' + syminfo.ticker +
-         '","action":"close","qty":' + str.tostring(orderQty) + '}'
+         '","action":"close","qty":' + str.tostring(orderQty) + ',"price":"' + str.tostring(close) + '"}'
     alert(exitMsg, alert.freq_once_per_bar_close)
 
 // ============ 設定 TradingView Alert 的方式 ============

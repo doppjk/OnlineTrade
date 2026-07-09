@@ -22,6 +22,11 @@ webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
 // 會查表轉成正確的 UniTrade 商品代碼。這樣圖表換商品也不用記得手動改這裡，
 // 避免又一次「忘記更新、代碼過期」的問題（就是這份程式之前踩過的那個坑）。
 
+// 2026-07-10 加上 price 欄位 (K棒收盤價 close)：safe_test_mode 下單要用參考價
+// 算「絕對不可能成交」的限價，原本 Cloud Run 端用 UniTrade 的 fquote API 查，
+// 但這個帳號沒有報價權限（回傳「不允許操作!」）。改成直接把 close 帶過去，
+// Pine 端本來就知道這根K棒收多少，不用另外查。
+
 // 每根K棒收盤都算一次 ping，action 在 buy/sell 之間交替，方便在 log 裡分辨
 var int pingCount = 0
 pingCount := pingCount + 1
@@ -29,7 +34,7 @@ isBuy = pingCount % 2 == 1
 
 pingMsg = '{"secret":"' + webhookSecret + '","signal_id":"ping_' + str.tostring(time) +
      '","strategy":"webhook_ping_test","symbol":"' + syminfo.ticker +
-     '","action":"' + (isBuy ? "buy" : "sell") + '","qty":1}'
+     '","action":"' + (isBuy ? "buy" : "sell") + '","qty":1,"price":"' + str.tostring(close) + '"}'
 
 alert(pingMsg, alert.freq_once_per_bar_close)
 

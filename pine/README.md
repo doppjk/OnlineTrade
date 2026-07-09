@@ -13,11 +13,12 @@ Pine Script v6 指標與策略原始檔放這裡。
   "strategy": "<策略名稱>",
   "symbol": "<syminfo.ticker，例如 NQ1!，見下方 2026-07-10 更新>",
   "action": "buy | sell | close",
-  "qty": 1
+  "qty": 1,
+  "price": "<close，這根K棒的收盤價，見下方 2026-07-10 更新（safe_test_mode 用）>"
 }
 ```
 
-**2026-07-10 更新（兩件事）**：
+**2026-07-10 更新（三件事）**：
 
 1. **交易標的改成外期**：手機券商 App 回報「商品代號錯誤」才發現原本用內期
    (`dtrade`) API 下單、商品代碼是隨便填的過期內期合約。實際要交易的是那斯達克
@@ -34,6 +35,14 @@ Pine Script v6 指標與策略原始檔放這裡。
    退回把 `symbol` 直接當 UniTrade 代碼用（相容舊格式）。目前對照表只維護
    CME 外期商品，內期（台指/小台指）對照表已經先寫在 `product_map.py`
    裡備查，但下單邏輯還沒接回來。
+3. **新增 `price` 欄位**：`SAFE_TEST_MODE` 下單需要一個參考價，用來計算「絕對
+   不可能成交」的限價要掛在哪。原本 Cloud Run 端用 UniTrade 的 `fquote`
+   （外期報價）API 查即時成交價，結果發現這個帳號沒有報價權限（回傳
+   「不允許操作!」，跟下單權限 `ftrade` 是分開授權的）。改成 Pine 端直接把
+   觸發 alert 當下這根K棒的 `close` 塞進 payload 的 `price` 欄位，Cloud Run
+   端優先用這個值，不用另外查價，也不受帳號權限限制。三份策略檔都已經加上
+   這個欄位；如果你手上還有更早版本貼在 TradingView 上的腳本，記得重新貼過
+   最新版（改 Pine 原始檔的預設值不會回頭更新已經套用在圖表上的既有腳本）。
 
 ## ma300_breakout_retest_strategy.pine
 
