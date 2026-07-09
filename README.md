@@ -54,4 +54,6 @@ Cloud Run (service/)                          ← 標準模式，非常駐單例
 
 **2026-07-10 修正 SAFE_TEST_MODE 的參考價來源**：跑真實測試時發現 Cloud Run log 顯示 `fquote_on_error 不允許操作!`——這個帳號有下單權限 (`ftrade`) 但沒有外期報價權限 (`fquote`)，兩者在這家券商是分開授權的，導致 `safe_test_mode` 查不到參考價、下單直接失敗。改成優先用 webhook payload 裡的 `price` 欄位（Pine 端在 alert 觸發當下的 K 棒 `close`，本來就知道，不用另外查），查不到才退回呼叫 `fquote` 當備援。三份 Pine 策略檔跟 `pine/README.md` payload schema 都已同步更新加上 `price` 欄位。
 
+**2026-07-09 修正商品對照表沒接到「特定到期月合約」的問題**：Cloud Run log 出現 `no valid unexpired contract found for CME/MNQU26`——原因是使用者圖表開的不是連續合約 `NQ1!`，而是直接選了 9 月到期的微型那斯達克合約，`syminfo.ticker` 回傳的是已含月份代碼的 `"MNQU26"`，對不上 `product_map.py` 表裡只有的連續合約代碼，整串被當成 UniTrade symbol 直接查，當然查不到。`product_map.py` 新增 `_parse_dated_contract()`，能從 `EXCHANGE_BY_BASE_SYMBOL` 已知的基礎代碼比對前綴，拆出「月份代碼字母 + 年份」的合約字串，取出基礎代碼（`MNQU26` -> `MNQ`）。現在不管圖表開連續合約還是特定到期月合約，`resolve_foreign_product()` 都能正確解析。
+
 下一步：把最新版 Pine 腳本重新貼到 TradingView（既有圖表上的腳本不會自動套用原始檔更新），用 MNQ + SAFE_TEST_MODE 重新跑一次完整的下單測試（含真實 TradingView alert 觸發，不是手動 curl），確認限價單有正確掛出去、狀態是「委託成功」但沒有成交；測完記得手動到券商 App 取消掛單（目前程式還沒有取消/改單功能）。之後解決 `unitrade_client.py` 裡 `"close"` action 的 opencloseflag 缺口（目前只驗證過 `buy` 開倉單），並開始討論 Python 鏡射回測引擎（`backtest/`）怎麼做（含外期報價 `fquote` 怎麼接，或者這個帳號要另外申請權限）。
