@@ -58,6 +58,41 @@ DRY_RUN=false PROJECT_ID=$PROJECT_ID ./infra/deploy.sh
 `UNITRADE_ACCOUNT`／`UNITRADE_PASSWORD`／`UNITRADE_CERT_PASSWORD` 則是一般密鑰
 環境變數。`DRY_RUN=false` 才會真的呼叫 UniTrade login → 下單。
 
+## 固定 IP（如果 UniTrade 測試環境要求登入 IP 白名單）
+
+Cloud Run 預設對外連線用的是共用、會變動的 IP，如果 UniTrade 那邊要求登入 IP
+白名單，用預設設定登入會被擋。需要另外設定固定對外 IP：
+
+```bash
+PROJECT_ID=onlinetrader-501816
+REGION=asia-east1
+
+# 1. 保留一個固定的對外 IP
+gcloud compute addresses create unitrade-nat-ip \
+  --region=$REGION --project=$PROJECT_ID
+
+# 2. 建立 Cloud Router
+gcloud compute routers create onlinetrader-router \
+  --network=default --region=$REGION --project=$PROJECT_ID
+
+# 3. 建立 Cloud NAT，綁定剛剛保留的固定 IP
+gcloud compute routers nats create onlinetrader-nat \
+  --router=onlinetrader-router \
+  --region=$REGION \
+  --nat-external-ip-pool=unitrade-nat-ip \
+  --nat-all-subnet-ip-ranges \
+  --project=$PROJECT_ID
+
+# 4. 查出這個固定 IP 是多少，拿去給 UniTrade 那邊登記白名單
+gcloud compute addresses describe unitrade-nat-ip \
+  --region=$REGION --project=$PROJECT_ID --format="value(address)"
+```
+
+`infra/deploy.sh` 預設會把 Cloud Run 對外流量導去走這個固定 IP
+（`USE_STATIC_IP=true` 是預設值）。如果還沒建立 Cloud NAT 就跑 deploy.sh，
+可以先設 `USE_STATIC_IP=false` 跳過這段，等 Cloud NAT 建好、IP 也登記進
+UniTrade 白名單後，再拿掉這個變數（或設回 true）重新部署。
+
 ## 已知缺口
 
 `service/broker/unitrade_client.py` 的 `place_order()` 對 `"close"` action

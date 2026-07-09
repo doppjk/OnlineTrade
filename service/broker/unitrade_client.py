@@ -13,6 +13,10 @@ UniTrade API 封裝。
 `from unitrade.unitrade import *` 會匯出 Unitrade / DOrderObject 等名稱，且 DOrderObject
 欄位與這裡的用法一致。login()/order() 的呼叫方式尚未用真實帳密實際下過單，
 第一次接測試帳號時仍要留意錯誤訊息。
+
+2026-07-09 對照官方文件（開始頁 https://pfcec.github.io/unitrade/開始/）修正一個 bug：
+login() 原本讀取 resp.error（不存在的欄位），實際上 LoginResponse 物件是
+ok / errorcode / errormsg，已修正並把 errorcode 也一起往上傳。
 """
 import logging
 from dataclasses import dataclass
@@ -53,9 +57,13 @@ class UnitradeClient:
         self._api.on_error = lambda err: logger.error("UniTrade error: %s", err)
 
         resp = self._api.login(self.url, self.account, self.password, self.cert_path, self.cert_password)
+        # LoginResponse 物件結構（見 https://pfcec.github.io/unitrade/開始/ 第4節）：
+        # ok / errorcode / errormsg —— 之前這裡誤用了不存在的 resp.error，
+        # 導致登入失敗時看不到真正的錯誤代碼/訊息。
         if not resp.ok:
-            logger.error("UniTrade login failed: %s", resp.error)
-            return OrderResult(ok=False, stage="login", errormsg=resp.error)
+            logger.error("UniTrade login failed: errorcode=%s errormsg=%s", resp.errorcode, resp.errormsg)
+            return OrderResult(ok=False, stage="login", errorcode=resp.errorcode, errormsg=resp.errormsg)
+        logger.info("UniTrade login ok")
         return OrderResult(ok=True, stage="login")
 
     def place_order(self, signal: dict) -> OrderResult:
