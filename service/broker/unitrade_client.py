@@ -21,9 +21,15 @@ ok / errorcode / errormsg，已修正並把 errorcode 也一起往上傳。
 2026-07-09 修正第二個 bug（真實測試帳號下單回傳 MSG005「該帳號不允許操作」才發現）：
 下單物件的 actno 原本直接沿用登入帳號 (self.account)，但官方 FAQ
 (https://pfcec.github.io/unitrade/常見問題/下單失敗/) 說明登入帳號不一定等於
-可下單的「交易帳號」，要在登入成功後另外呼叫 unitrade.get_accounts()
-（注意是 module-level function，不是 api.get_accounts()）取得交易帳號清單，
-下單時要用清單裡的 7 碼交易帳號當 actno。已修正為登入後查詢並快取。
+可下單的「交易帳號」，要在登入成功後另外查詢交易帳號清單，下單時要用清單裡的
+7 碼交易帳號當 actno。已修正為登入後查詢並快取。
+
+2026-07-09 修正第三個 bug：get_accounts() 一開始誤用「開始」頁範例寫的
+unitrade.get_accounts()（module-level function），實際部署後噴
+`module 'unitrade' has no attribute 'get_accounts'`。對照 API Reference 頁，
+get_accounts()／login()／dtrade 等其實都列在 `Unitrade` 類別底下，是實例方法，
+「開始」頁的範例本身寫錯（前面用 api = Unitrade()，後面卻寫 unitrade.get_accounts()）。
+已改成 self._api.get_accounts()，跟常見問題頁的範例 api.get_accounts() 一致。
 """
 import logging
 from dataclasses import dataclass
@@ -74,9 +80,10 @@ class UnitradeClient:
         logger.info("UniTrade login ok")
 
         # 登入帳號不一定是可下單的交易帳號，需另外查詢（見官方 FAQ「該帳號不允許操作」章節）。
-        # 注意 get_accounts() 是 unitrade 模組層級的函式，不是 self._api.get_accounts()。
+        # 注意 get_accounts() 是 Unitrade 實例方法（self._api.get_accounts()），
+        # 不是 unitrade 模組層級的函式 —— 官方「開始」頁範例這裡寫錯了。
         try:
-            accounts = unitrade.get_accounts()
+            accounts = self._api.get_accounts()
         except Exception as exc:  # noqa: BLE001  SDK 例外情況先攔下來轉成一般錯誤回傳
             logger.error("UniTrade get_accounts failed: %s", exc)
             return OrderResult(ok=False, stage="login", errormsg=f"get_accounts failed: {exc}")
