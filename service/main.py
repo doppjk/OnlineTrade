@@ -10,6 +10,11 @@ DRY_RUN 模式（預設開啟）：不會真的呼叫 UniTrade，只驗證密鑰
 方便在還沒接測試帳號密鑰前先確認 webhook 有正確收到訊號。
 確認要接測試帳號時，把 DRY_RUN 設為 "false" 並補上 UNITRADE_* 環境變數。
 
+SAFE_TEST_MODE（預設開啟）：DRY_RUN=false 時，下單會改成限價單、掛在不可能
+成交的價位（見 broker/unitrade_client.py 開頭註解），用來在正式帳號上測試
+整條 pipeline 又不想真的成交。確認沒問題、真的要送市價單成交時，把
+SAFE_TEST_MODE 設為 "false"。
+
 還沒實作策略邏輯本身 —— 這裡只負責「收到訊號後怎麼處理」，策略還是在 TradingView 端。
 """
 import os
@@ -78,6 +83,8 @@ def webhook():
         password=os.environ["UNITRADE_PASSWORD"],
         cert_path=os.environ["UNITRADE_CERT_PATH"],
         cert_password=os.environ["UNITRADE_CERT_PASSWORD"],
+        safe_test_mode=os.environ.get("SAFE_TEST_MODE", "true").lower() == "true",
+        safe_limit_offset_pct=float(os.environ.get("SAFE_LIMIT_OFFSET_PCT", "0.2")),
     )
     login_result = client.login()
     if not login_result.ok:

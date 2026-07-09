@@ -11,11 +11,29 @@ Pine Script v6 指標與策略原始檔放這裡。
   "secret": "<共享密鑰，對應 Cloud Run 端 WEBHOOK_SECRET>",
   "signal_id": "<每次訊號唯一值，例如 {{time}}_{{ticker}}，用於 Cloud Run 端防重放/去重>",
   "strategy": "<策略名稱>",
-  "symbol": "<商品代碼，對應 UniTrade 內期/外期商品代碼>",
+  "symbol": "<syminfo.ticker，例如 NQ1!，見下方 2026-07-10 更新>",
   "action": "buy | sell | close",
   "qty": 1
 }
 ```
+
+**2026-07-10 更新（兩件事）**：
+
+1. **交易標的改成外期**：手機券商 App 回報「商品代號錯誤」才發現原本用內期
+   (`dtrade`) API 下單、商品代碼是隨便填的過期內期合約。實際要交易的是那斯達克
+   期貨，已經改成呼叫外期 (`ftrade`) API，商品定為 CME 微型那斯達克期貨 MNQ。
+   合約月份不用管，Cloud Run 端 (`unitrade_client.py` 的 `_resolve_front_month()`)
+   會即時查詢目前有效、且已經過換月緩衝期（預設 7 天，避免用到量能已經萎縮的
+   即將到期合約）的合約。
+2. **`symbol` 欄位改成直接送 `syminfo.ticker`**（TradingView 自己的商品代碼，例如
+   `"NQ1!"`），不用再手動填 UniTrade 的商品代碼。Cloud Run 端新增了
+   `service/broker/product_map.py` 對照表，把 TradingView ticker 轉成正確的
+   UniTrade (exchange, symbol)。這樣以後換圖表商品，Pine 這邊完全不用改，
+   也不會再發生「忘記把商品代碼更新、用到過期或錯誤代碼」的問題（這已經是
+   第二次因為手動填商品代碼出包了）。如果 `product_map.py` 查不到對照，會
+   退回把 `symbol` 直接當 UniTrade 代碼用（相容舊格式）。目前對照表只維護
+   CME 外期商品，內期（台指/小台指）對照表已經先寫在 `product_map.py`
+   裡備查，但下單邏輯還沒接回來。
 
 ## ma300_breakout_retest_strategy.pine
 

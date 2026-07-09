@@ -32,8 +32,11 @@ strategy("MA300 Breakout-Retest Long (60m)", overlay=true,
 // ============ Inputs ============
 maLength      = input.int(300, "均線天數 (以日K計算)", minval=1)
 webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
-symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
 orderQty      = input.int(1, "下單口數", minval=1, group="Webhook")
+
+// 2026-07-10 改成直接送 syminfo.ticker，不再要求手動填 UniTrade 商品代碼，
+// Cloud Run 端 (service/broker/product_map.py) 查表轉成正確代碼，細節同
+// webhook_ping_test.pine 開頭的說明。
 
 // ============ 300日均線 (日K, 用前一天已收盤的值避免 repaint) ============
 dailySma = request.security(syminfo.tickerid, "1D", ta.sma(close, maLength)[1], lookahead=barmerge.lookahead_off)
@@ -87,13 +90,13 @@ plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
 // payload 格式對應 repo README / pine/README.md 定義的共用格式
 if longSignal
     entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
-         '","strategy":"ma300_breakout_retest","symbol":"' + symbolCode +
+         '","strategy":"ma300_breakout_retest","symbol":"' + syminfo.ticker +
          '","action":"buy","qty":' + str.tostring(orderQty) + '}'
     alert(entryMsg, alert.freq_once_per_bar_close)
 
 if exitSignal
     exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
-         '","strategy":"ma300_breakout_retest","symbol":"' + symbolCode +
+         '","strategy":"ma300_breakout_retest","symbol":"' + syminfo.ticker +
          '","action":"close","qty":' + str.tostring(orderQty) + '}'
     alert(exitMsg, alert.freq_once_per_bar_close)
 

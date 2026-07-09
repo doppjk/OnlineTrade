@@ -12,6 +12,12 @@
 #
 # DRY_RUN 預設為 true（安全預設值，不會真的呼叫 UniTrade）。
 # 要接測試帳號真的送出委託時，執行：DRY_RUN=false ./infra/deploy.sh
+#
+# SAFE_TEST_MODE 預設為 true：DRY_RUN=false 時會強制送限價單、掛在不可能成交
+# 的價位（買單掛目前成交價下方 SAFE_LIMIT_OFFSET_PCT、賣單掛上方），這是為了
+# 在正式帳號上測試 pipeline 又不想真的成交（2026-07-10 使用者換成正式帳號後
+# 提出的需求）。確認沒問題、真的要送市價單成交時，執行：
+#   DRY_RUN=false SAFE_TEST_MODE=false ./infra/deploy.sh
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?請設定 PROJECT_ID}"
@@ -22,6 +28,8 @@ UNITRADE_URL="${UNITRADE_URL:-https://viploginm.pfctrade.com}"
 USE_STATIC_IP="${USE_STATIC_IP:-false}"
 VPC_NETWORK="${VPC_NETWORK:-default}"
 VPC_SUBNET="${VPC_SUBNET:-default}"
+SAFE_TEST_MODE="${SAFE_TEST_MODE:-true}"
+SAFE_LIMIT_OFFSET_PCT="${SAFE_LIMIT_OFFSET_PCT:-0.2}"
 
 NETWORK_FLAGS=()
 if [ "$USE_STATIC_IP" = "true" ]; then
@@ -36,5 +44,5 @@ gcloud run deploy "$SERVICE_NAME" \
   --concurrency 1 \
   --allow-unauthenticated \
   "${NETWORK_FLAGS[@]}" \
-  --set-env-vars "DRY_RUN=${DRY_RUN},UNITRADE_URL=${UNITRADE_URL},UNITRADE_CERT_PATH=/secrets/unitrade.pfx" \
+  --set-env-vars "DRY_RUN=${DRY_RUN},UNITRADE_URL=${UNITRADE_URL},UNITRADE_CERT_PATH=/secrets/unitrade.pfx,SAFE_TEST_MODE=${SAFE_TEST_MODE},SAFE_LIMIT_OFFSET_PCT=${SAFE_LIMIT_OFFSET_PCT}" \
   --set-secrets "WEBHOOK_SECRET=WEBHOOK_SECRET:latest,UNITRADE_ACCOUNT=UNITRADE_ACCOUNT:latest,UNITRADE_PASSWORD=UNITRADE_PASSWORD:latest,UNITRADE_CERT_PASSWORD=UNITRADE_CERT_PASSWORD:latest,/secrets/unitrade.pfx=UNITRADE_CERT:latest"

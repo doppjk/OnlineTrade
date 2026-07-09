@@ -16,7 +16,11 @@
 indicator("Webhook Ping Test", overlay=true)
 
 webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
-symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
+
+// 2026-07-10 改成直接送 TradingView 自己的 ticker (syminfo.ticker，例如 "NQ1!")，
+// 不再要求手動填 UniTrade 商品代碼——Cloud Run 端 (service/broker/product_map.py)
+// 會查表轉成正確的 UniTrade 商品代碼。這樣圖表換商品也不用記得手動改這裡，
+// 避免又一次「忘記更新、代碼過期」的問題（就是這份程式之前踩過的那個坑）。
 
 // 每根K棒收盤都算一次 ping，action 在 buy/sell 之間交替，方便在 log 裡分辨
 var int pingCount = 0
@@ -24,7 +28,7 @@ pingCount := pingCount + 1
 isBuy = pingCount % 2 == 1
 
 pingMsg = '{"secret":"' + webhookSecret + '","signal_id":"ping_' + str.tostring(time) +
-     '","strategy":"webhook_ping_test","symbol":"' + symbolCode +
+     '","strategy":"webhook_ping_test","symbol":"' + syminfo.ticker +
      '","action":"' + (isBuy ? "buy" : "sell") + '","qty":1}'
 
 alert(pingMsg, alert.freq_once_per_bar_close)

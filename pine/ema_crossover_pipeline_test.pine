@@ -24,8 +24,11 @@ strategy("EMA Crossover (Pipeline Test)", overlay=true,
 fastLen       = input.int(9, "快線 EMA")
 slowLen       = input.int(21, "慢線 EMA")
 webhookSecret = input.string("change-me", "Webhook Secret", group="Webhook")
-symbolCode    = input.string("MXFG5", "UniTrade 商品代碼", group="Webhook")
 orderQty      = input.int(1, "下單口數", minval=1, group="Webhook")
+
+// 2026-07-10 改成直接送 syminfo.ticker，不再要求手動填 UniTrade 商品代碼，
+// Cloud Run 端 (service/broker/product_map.py) 查表轉成正確代碼，細節同
+// webhook_ping_test.pine 開頭的說明。
 
 fastEma = ta.ema(close, fastLen)
 slowEma = ta.ema(close, slowLen)
@@ -50,12 +53,12 @@ plotshape(exitSignal, title="Long Exit", style=shape.triangledown,
 // ============ Webhook Alert（跟另一份策略共用同樣的 payload 格式） ============
 if longSignal
     entryMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
-         '","strategy":"ema_crossover_test","symbol":"' + symbolCode +
+         '","strategy":"ema_crossover_test","symbol":"' + syminfo.ticker +
          '","action":"buy","qty":' + str.tostring(orderQty) + '}'
     alert(entryMsg, alert.freq_once_per_bar_close)
 
 if exitSignal
     exitMsg = '{"secret":"' + webhookSecret + '","signal_id":"' + str.tostring(time) +
-         '","strategy":"ema_crossover_test","symbol":"' + symbolCode +
+         '","strategy":"ema_crossover_test","symbol":"' + syminfo.ticker +
          '","action":"close","qty":' + str.tostring(orderQty) + '}'
     alert(exitMsg, alert.freq_once_per_bar_close)

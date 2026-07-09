@@ -4,32 +4,41 @@ UniTrade API 封裝。
 架構決策：login-per-request —— 每次下單都是 login() → order() → logout()，
 不維持長連線（見 repo README 架構決策 #1）。
 
+交易標的：外期（海外期貨，目前鎖定 CME 那斯達克微型期貨 MNQ，對應 TradingView
+NQ1! 策略），走 ftrade（外期）API，不是 dtrade（內期/台灣期貨）。
+
 參考文件：
 - 登入 / 帳號查詢: https://pfcec.github.io/unitrade/API/unitrade/
-- 下單 (dtrade.order):  https://pfcec.github.io/unitrade/API/dtrade/
-- 歷史K線 (dquote.get_history_bardata): https://pfcec.github.io/unitrade/API/dquote/
+- 外期下單教學: https://pfcec.github.io/unitrade/教學/外期下單/
+- 外期下單物件 (ftrade.order): https://pfcec.github.io/unitrade/API/ftrade/
 
 已於 2026-07-06 用 `pip install unitrade`（真的 PyPI 套件，含 Linux wheel）實際安裝驗證過：
-`from unitrade.unitrade import *` 會匯出 Unitrade / DOrderObject 等名稱，且 DOrderObject
-欄位與這裡的用法一致。login()/order() 的呼叫方式尚未用真實帳密實際下過單，
-第一次接測試帳號時仍要留意錯誤訊息。
+`from unitrade.unitrade import *` 會匯出 Unitrade / DOrderObject / FOrderObject 等名稱。
 
-2026-07-09 對照官方文件（開始頁 https://pfcec.github.io/unitrade/開始/）修正一個 bug：
-login() 原本讀取 resp.error（不存在的欄位），實際上 LoginResponse 物件是
-ok / errorcode / errormsg，已修正並把 errorcode 也一起往上傳。
+2026-07-09 對照官方文件修正三個 bug（真實測試帳號下單時才發現，官方文件本身在
+多處前後矛盾，別只看單一頁）：
+1. login() 原本讀取不存在的 resp.error，實際上 LoginResponse 物件是
+   ok / errorcode / errormsg。
+2. 下單物件的 actno 原本直接沿用登入帳號，但登入帳號不一定等於可下單的
+   「交易帳號」，回傳 MSG005「該帳號不允許操作」。已改成登入後呼叫
+   get_accounts() 查詢正確的交易帳號並快取。
+3. get_accounts() 是 Unitrade 實例方法 (self._api.get_accounts())，不是
+   「開始」頁範例寫的 unitrade.get_accounts()（module-level，實際會噴
+   AttributeError）。
 
-2026-07-09 修正第二個 bug（真實測試帳號下單回傳 MSG005「該帳號不允許操作」才發現）：
-下單物件的 actno 原本直接沿用登入帳號 (self.account)，但官方 FAQ
-(https://pfcec.github.io/unitrade/常見問題/下單失敗/) 說明登入帳號不一定等於
-可下單的「交易帳號」，要在登入成功後另外查詢交易帳號清單，下單時要用清單裡的
-7 碼交易帳號當 actno。已修正為登入後查詢並快取。
+2026-07-10 發現更根本的問題：原本用 dtrade（內期）下單，商品代碼隨便填了一個
+過期的內期合約代碼 (MXFG5)，手機券商 App 顯示「商品代號錯誤」。但使用者要交易
+的其實是那斯達克期貨（外期），跟內期是完全不同的 API 模組、不同的商品代碼格式
+（拆成 exchange + symbol + maturitymonthyear，不是合併字串）。已整個改寫成呼叫
+ftrade.order()，並且合約月份改成即時查詢目前有效合約（見 _resolve_front_month），
+不再寫死月份代碼，避免同一個問題以後又發生一次。
 
-2026-07-09 修正第三個 bug：get_accounts() 一開始誤用「開始」頁範例寫的
-unitrade.get_accounts()（module-level function），實際部署後噴
-`module 'unitrade' has no attribute 'get_accounts'`。對照 API Reference 頁，
-get_accounts()／login()／dtrade 等其實都列在 `Unitrade` 類別底下，是實例方法，
-「開始」頁的範例本身寫錯（前面用 api = Unitrade()，後面卻寫 unitrade.get_accounts()）。
-已改成 self._api.get_accounts()，跟常見問題頁的範例 api.get_accounts() 一致。
+2026-07-10 加上 safe_test_mode：使用者已經換成正式交易帳號測試（不是測試帳號，
+真的可能成交），要求下單先改成限價單、掛在「絕對不可能成交」的價位，確認整條
+路徑正常後才切回市價單。做法：查目前成交價 (fquote.query_tick_data_trade)，
+買單掛在成交價下方 SAFE_LIMIT_OFFSET_PCT（預設 20%），賣單掛在上方，
+正常市況下不會有滑價大到吃到這個價位的可能。safe_test_mode 預設開啟，
+之後真的要送市價單時把它關掉（見 main.py 怎麼從環境變數帶進來）。
 """
 import logging
 from dataclasses import dataclass
@@ -37,7 +46,9 @@ from datetime import datetime
 from typing import Optional
 
 import unitrade
-from unitrade.unitrade import *  # noqa: F401,F403  (Unitrade, DOrderObject 等)
+from unitrade.unitrade import *  # noqa: F401,F403  (Unitrade, DOrderObject, FOrderObject 等)
+
+from .product_map import resolve_foreign_product
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +68,8 @@ class UnitradeClient:
     用完呼叫 logout()。不要在多個 request 之間共用同一個 instance。
     """
 
-    def __init__(self, url: str, account: str, password: str, cert_path: str, cert_password: str):
+    def __init__(self, url: str, account: str, password: str, cert_path: str, cert_password: str,
+                 safe_test_mode: bool = True, safe_limit_offset_pct: float = 0.2):
         self.url = url
         self.account = account          # 登入帳號 (userid)，不一定等於下單用的交易帳號
         self.password = password
@@ -65,6 +77,12 @@ class UnitradeClient:
         self.cert_password = cert_password
         self._api: Optional["Unitrade"] = None
         self.trade_account: Optional[str] = None  # 登入後查到的實際可下單交易帳號 (actno)
+
+        # safe_test_mode=True 時，下單一律送限價單、掛在「不可能成交」的價位
+        # （買單掛在目前成交價下方 safe_limit_offset_pct，賣單掛在上方），用來
+        # 在正式帳號上測試整條 pipeline 又不想真的成交。細節見檔案開頭註解。
+        self.safe_test_mode = safe_test_mode
+        self.safe_limit_offset_pct = safe_limit_offset_pct
 
     def login(self) -> OrderResult:
         self._api = Unitrade()
@@ -96,29 +114,140 @@ class UnitradeClient:
         logger.info("UniTrade trading accounts: %s (using %s)", accounts, self.trade_account)
         return OrderResult(ok=True, stage="login")
 
+    # 距離最後交易日幾天內就換到下一口合約，而不是死守「還沒過期」的那口。
+    # 理由（使用者 2026-07-10 提出）：合約快到期時量會慢慢萎縮，實務上大概
+    # 倒數一週左右市場就已經把量能轉去下一口熱門合約了，這時如果還死守
+    # 最近到期的那口，容易碰到成交稀薄、滑價變大的問題。7 天是先抓一個
+    # 保守值，之後如果覺得不準可以再調。
+    ROLLOVER_BUFFER_DAYS = 7
+
+    def _resolve_front_month(self, exchange: str, symbol: str) -> Optional[str]:
+        """
+        查詢目前應該交易的外期合約月份，回傳 maturitymonthyear (YYYYMM)。
+        找不到就回傳 None。
+
+        規則：先過濾掉已經過最後交易日的合約，剩下依到期日排序，跳過「距離
+        最後交易日不到 ROLLOVER_BUFFER_DAYS 天」的合約（视为量能已經轉移到
+        下一口），選第一個滿足緩衝天數的合約。如果全部合約都在緩衝期內
+        （理論上不太會發生），退回選最後到期的那口，至少還能下單。
+
+        這是為了避免像先前 dtrade 版本那樣把合約代碼寫死在設定裡，結果過期
+        了都沒發現（2026-07-10 手機 App 回報「商品代號錯誤」才發現用的是
+        2025 年的過期合約）。
+        """
+        resp = self._api.get_foreign_contracts(exchange, symbol, "F")
+        if not resp.ok or not resp.data:
+            logger.error("get_foreign_contracts(%s, %s) failed: %s", exchange, symbol, resp.error)
+            return None
+
+        today_dt = datetime.now()
+        today = today_dt.strftime("%Y%m%d")
+        valid = [c for c in resp.data if c.lasttradedate >= today]
+        if not valid:
+            logger.error("get_foreign_contracts(%s, %s) has no unexpired contract", exchange, symbol)
+            return None
+
+        valid.sort(key=lambda c: c.lasttradedate)
+
+        for c in valid:
+            last_trade_dt = datetime.strptime(c.lasttradedate, "%Y%m%d")
+            days_left = (last_trade_dt - today_dt).days
+            if days_left > self.ROLLOVER_BUFFER_DAYS:
+                logger.info("front-month contract for %s/%s: %s (last trade date %s, %d days left)",
+                            exchange, symbol, c.monthyear, c.lasttradedate, days_left)
+                return c.monthyear
+
+        # 全部都在緩衝期內：退回選到期最晚的那口，至少還能下單
+        fallback = valid[-1]
+        logger.warning("all contracts for %s/%s are within rollover buffer, falling back to %s (last trade %s)",
+                        exchange, symbol, fallback.monthyear, fallback.lasttradedate)
+        return fallback.monthyear
+
+    def _get_last_price(self, exchange: str, symbol: str, maturitymonthyear: str) -> Optional[float]:
+        """
+        查目前成交價，safe_test_mode 用來算「絕對不可能成交」的限價要掛在哪。
+        查不到就回傳 None（呼叫端要處理查不到價格的情況，不能硬送限價 0）。
+        注意：這裡假設 fquote 也是 Unitrade 實例屬性 (self._api.fquote)，跟
+        dtrade/ftrade/get_accounts 已經確認過的模式一致——官方「外期行情」頁的
+        範例又是寫成 unitrade.fquote.xxx()（module-level），沒有實際測試過
+        這頁範例是否也跟 get_accounts() 一樣寫錯，第一次用時要留意錯誤訊息。
+        """
+        try:
+            resp = self._api.fquote.query_tick_data_trade(exchange, symbol, maturitymonthyear, "", "F")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("query_tick_data_trade(%s, %s, %s) raised: %s", exchange, symbol, maturitymonthyear, exc)
+            return None
+
+        if not resp.ok or resp.data is None:
+            logger.error("query_tick_data_trade(%s, %s, %s) failed: %s", exchange, symbol, maturitymonthyear,
+                         getattr(resp, "error", ""))
+            return None
+
+        return resp.data.lastprice
+
     def place_order(self, signal: dict) -> OrderResult:
         """
-        signal 預期欄位: symbol (UniTrade 商品代碼), action ("buy"/"sell"), qty (int)。
-        目前只處理開倉方向 buy/sell，"close" 邏輯留到策略定案後再補
+        signal 預期欄位:
+          symbol   優先當成 TradingView ticker 查 product_map.py 的對照表
+                   （例如 "NQ1!" -> CME/MNQ）；查不到就退回把這個值直接當
+                   UniTrade 的 CME 商品代碼用（相容舊格式，例如直接填 "MNQ"）
+          exchange 只有在 symbol 沒查到對照表時才會用到，預設 "CME"
+          action   "buy" / "sell"
+          qty      口數
+
+        目前只處理開倉方向 buy/sell，"close" 邏輯留到之後再補
         （通常要另外查目前部位方向才能正確組出平倉單）。
         """
         if self._api is None or self.trade_account is None:
             return OrderResult(ok=False, stage="order", errormsg="not logged in")
 
-        order_obj = DOrderObject(
-            actno=self.trade_account,
-            subactno="",
-            productid=signal["symbol"],
-            bs="B" if signal["action"] == "buy" else "S",
-            ordertype="M",        # 市價單，先求打通；之後可依需求改限價 (L)
-            price=0,
-            orderqty=signal.get("qty", 1),
-            ordercondition="R",   # ROD
-            opencloseflag="",
-            dtrade="N",
-            note=str(signal.get("signal_id", ""))[:20],
-        )
-        resp = self._api.dtrade.order(order_obj)
+        mapped = resolve_foreign_product(signal["symbol"])
+        if mapped:
+            exchange, symbol = mapped
+            logger.info("resolved TradingView symbol %s -> UniTrade %s/%s", signal["symbol"], exchange, symbol)
+        else:
+            exchange = signal.get("exchange", "CME")
+            symbol = signal["symbol"]
+
+        maturitymonthyear = self._resolve_front_month(exchange, symbol)
+        if not maturitymonthyear:
+            return OrderResult(ok=False, stage="order",
+                                errormsg=f"no valid unexpired contract found for {exchange}/{symbol}")
+
+        bs = "B" if signal["action"] == "buy" else "S"
+
+        ordertype = "M"
+        price = 0
+        if self.safe_test_mode:
+            last_price = self._get_last_price(exchange, symbol, maturitymonthyear)
+            if last_price is None:
+                return OrderResult(ok=False, stage="order",
+                                    errormsg="safe_test_mode: could not fetch last price to compute safe limit")
+            # 買單掛在成交價下方、賣單掛在上方，正常市況下不會被吃到。
+            offset = last_price * self.safe_limit_offset_pct
+            price = round(last_price - offset if bs == "B" else last_price + offset, 2)
+            ordertype = "L"
+            logger.info("safe_test_mode: last_price=%s -> limit price=%s (bs=%s, offset_pct=%s)",
+                        last_price, price, bs, self.safe_limit_offset_pct)
+
+        order_obj = FOrderObject()
+        order_obj.actno = self.trade_account
+        order_obj.subactno = ""
+        order_obj.note = str(signal.get("signal_id", ""))[:20]
+        order_obj.exchange = exchange
+        order_obj.symbol = symbol
+        order_obj.maturitymonthyear = maturitymonthyear
+        order_obj.putorcall = "F"     # 期貨（不是選擇權）
+        order_obj.bs = bs
+        order_obj.ordertype = ordertype  # safe_test_mode 時強制 "L"（限價），平常是 "M"（市價）
+        order_obj.price = price
+        order_obj.stopprice = 0
+        order_obj.orderqty = signal.get("qty", 1)
+        order_obj.ordercondition = "R"  # ROD
+        order_obj.opencloseflag = ""    # 空白 = 自動判斷新倉/平倉
+        order_obj.dtrade = "N"          # 非當沖
+
+        resp = self._api.ftrade.order(order_obj)
         return OrderResult(
             ok=resp.issend,
             stage="order",
@@ -133,6 +262,10 @@ class UnitradeClient:
         回測用歷史K線 —— 直接吃 UniTrade 自己的報價來源（跟實盤下單同一個資料源，
         不用另外接 TradingView 或第三方數據）。
         interval: "D" 日K / "1K" 分K。
+
+        TODO: 這裡還是用內期的 dquote，現在下單已經改成外期 (ftrade)，回測資料
+        應該要改用對應的外期報價元件 (fquote)，欄位/呼叫方式待查文件確認。
+        backtest/ 引擎真的要動工時再一起處理。
         """
         if self._api is None:
             return None

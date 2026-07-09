@@ -42,6 +42,14 @@ Cloud Run (service/)                          ← 標準模式，非常駐單例
 
 策略方面先擱置真正想交易的 `ma300_breakout_retest_strategy.pine`（條件嚴格、訊號稀疏，驗證起來費工），改用邏輯簡單、會頻繁觸發的 `ema_crossover_pipeline_test.pine`（EMA 9/21 交叉）跟純粹測速用的 `webhook_ping_test.pine` 打通 pipeline（細節見 `pine/README.md`）。
 
-**Pipeline 已於 2026-07-08 完整跑通**：Cloud Run 服務部署成功（`onlinetrader-webhook`，asia-east1），TradingView alert（webhook_ping_test.pine，1 分鐘線）→ Cloud Run `/webhook` → 密鑰驗證 → DRY_RUN 略過下單，全程 log 可見、每分鐘穩定觸發一次。
+**Pipeline 已於 2026-07-08 完整跑通（DRY_RUN）**：Cloud Run 服務部署成功（`onlinetrader-webhook`，asia-east1），TradingView alert（webhook_ping_test.pine，1 分鐘線）→ Cloud Run `/webhook` → 密鑰驗證 → DRY_RUN 略過下單，全程 log 可見、每分鐘穩定觸發一次。
 
-下一步：把 Cloud Run 的 `DRY_RUN` 設為 `false`、補上 `UNITRADE_*` 密鑰，接測試帳號跑通真實下單（先解決 `unitrade_client.py` 裡 "close" action 的 opencloseflag 缺口），之後再回頭處理 `ma300_breakout_retest_strategy.pine` 的訊號稀疏問題。
+**真實測試帳號下單已於 2026-07-09 驗證成功**：`DRY_RUN=false` 接上 UniTrade 測試帳號，webhook → 風控 → UniTrade login → 下單，回傳 `{"status":"ok","seq":"0002",...}`，委託單真的送出去了。過程中對照官方文件修了三個 `broker/unitrade_client.py` 的 bug（登入回傳欄位名稱、下單帳號要另外查詢 `get_accounts()`、`get_accounts()` 是實例方法不是模組函式），細節見該檔案開頭註解。登入網址也已更新為 `viploginm.pfctrade.com`。UniTrade 測試環境確認不要求 IP 白名單，`infra/deploy.sh` 的固定 IP 功能預設關閉。
+
+**2026-07-10 修正下單標的**：手機券商 App 回報委託失敗「商品代號錯誤」，發現下單邏輯原本誤用內期 (`dtrade`) API 跟寫死、已過期的內期合約代碼。實際要交易的是那斯達克期貨（外期），已改成呼叫 `ftrade.order()`，商品定為 CME 微型那斯達克期貨 MNQ，合約月份改成即時查詢目前未過期的最近合約（`_resolve_front_month()`），不再寫死月份，避免同樣的過期問題再發生。`ma300_breakout_retest_strategy.pine` 訊號稀疏的問題已確認不用處理（該策略先擱置）。
+
+**已擱置，不用處理**：`ma300_breakout_retest_strategy.pine` 訊號稀疏的問題（使用者已確認不需要調整，這個策略先放著）。
+
+**2026-07-10 新增 SAFE_TEST_MODE + 商品對照表**：使用者已換成正式交易帳號測試，要求避免真的成交。`unitrade_client.py` 新增 `safe_test_mode`（預設開啟）：下單時查目前成交價，強制送限價單、掛在買單價格下方/賣單價格上方 20%（`SAFE_LIMIT_OFFSET_PCT`，可調）的不可能成交價位，確認沒問題再手動關閉（`SAFE_TEST_MODE=false`）改回市價單。另外新增 `service/broker/product_map.py`，Pine 腳本改成直接送 `syminfo.ticker`，Cloud Run 端查表轉成 UniTrade 的 (exchange, symbol)，不用再手動填商品代碼（這是這幾天第二次因為手動填商品代碼出包）。合約換月邏輯也加了緩衝期（`ROLLOVER_BUFFER_DAYS`，預設 7 天），避免用到量能已經萎縮的即將到期合約。
+
+下一步：用 MNQ + SAFE_TEST_MODE 重新跑一次完整的下單測試（含真實 TradingView alert 觸發，不是手動 curl），確認限價單有正確掛出去、狀態是「委託成功」但沒有成交；之後解決 `unitrade_client.py` 裡 `"close"` action 的 opencloseflag 缺口（目前只驗證過 `buy` 開倉單），並開始討論 Python 鏡射回測引擎（`backtest/`）怎麼做（含外期報價 `fquote` 怎麼接）。
